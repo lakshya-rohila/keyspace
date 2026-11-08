@@ -1,10 +1,10 @@
 #!/bin/bash
 # Keyspace one-line installer.
-#   curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/keyspace/main/get.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/lakshya-rohila/keyspace/main/get.sh | bash
 # Downloads the latest release, installs it to /Applications and launches it.
 set -euo pipefail
 
-REPO="${KEYSPACE_REPO:-YOUR_GITHUB_USERNAME/keyspace}"
+REPO="${KEYSPACE_REPO:-lakshya-rohila/keyspace}"
 URL="${KEYSPACE_URL:-https://github.com/$REPO/releases/latest/download/Keyspace-macOS.zip}"
 APP="/Applications/Keyspace.app"
 
