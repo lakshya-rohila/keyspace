@@ -20,6 +20,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
 
         HotKeys.onPress = { [weak self] action in self?.handleHotKey(action) }
+        store.onKeysChanged = { [weak self] in
+            self?.registerHotkeys()
+            self?.refreshTitle()
+        }
         hotKeys.installHandler()
         registerHotkeys()
 
@@ -28,6 +32,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                        name: NSWorkspace.didLaunchApplicationNotification, object: nil)
         nc.addObserver(self, selector: #selector(appActivated(_:)),
                        name: NSWorkspace.didActivateApplicationNotification, object: nil)
+
+        // Scriptable trigger (also used for testing):
+        //   swift -e 'import Foundation; DistributedNotificationCenter.default().postNotificationName(.init("local.keyspace.switch"), object: "G", userInfo: nil, deliverImmediately: true)'
+        DistributedNotificationCenter.default().addObserver(
+            forName: .init("local.keyspace.switch"), object: nil, queue: .main) { [weak self] note in
+            guard let self, !self.paused, let key = (note.object as? String)?.uppercased(),
+                  self.store.state.keys.contains(key) else { return }
+            self.switcher.switchTo(key)
+            self.refreshTitle()
+        }
 
         // Re-apply the saved layout: this is the "remembers everything after restart" part.
         switcher.switchTo(store.state.current)
@@ -44,7 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @discardableResult
     func registerHotkeys() -> [SpaceKey] {
         hotKeys.registerPauseKey(store.state.modifier)
-        return paused ? [] : hotKeys.registerSpaceKeys(store.state.keys, store.state.modifier)
+        guard !paused else { return [] }
+        let move = SpaceStore.sorted(store.state.keys + SpaceStore.alwaysMoveKeys)
+        return hotKeys.registerSpaceKeys(switchKeys: store.state.keys, moveKeys: move, store.state.modifier)
     }
 
     // MARK: Settings window
@@ -108,7 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hotKeys.unregisterSpaceKeys()
             switcher.showEverything()
         } else {
-            hotKeys.registerSpaceKeys(store.state.keys, store.state.modifier)
+            registerHotkeys()
             switcher.switchTo(store.state.current)
         }
         refreshTitle()
@@ -118,31 +134,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func appLaunched(_ note: Notification) {
         guard !paused, let app = runningApp(note), let id = app.bundleIdentifier else { return }
-        if let space = store.space(of: id) {
-            if space != store.state.current {
-                // Freshly launched apps often re-show themselves while finishing launch.
+        if switcher.wasLaunchedByUs(id) {
+            // We launched it (e.g. "Launch Missing Apps"); keep it out of other spaces.
+            if let space = store.space(of: id), space != store.state.current {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { app.hide() }
             }
-        } else if store.state.autoAssign {
+            return
+        }
+        // You launched it (Spotlight, Dock, Finder…): its activation will be followed.
+        switcher.noteLaunch(id)
+        if store.space(of: id) == nil && store.state.autoAssign {
             store.assign(id, to: store.state.current)
         }
     }
 
     @objc func appActivated(_ note: Notification) {
-        guard !paused, !switcher.isSuppressingActivation,
-              let app = runningApp(note), let id = app.bundleIdentifier else { return }
+        guard !paused, let app = runningApp(note), let id = app.bundleIdentifier else { return }
         let current = store.state.current
-        if let space = store.space(of: id) {
-            if space != current {
-                // ⌘-Tab / Dock click / link opened an app that lives elsewhere: follow it.
-                switcher.switchTo(space)
-                refreshTitle()
-            } else {
-                store.state.lastFocused[current] = id   // saved on next switch
-            }
-        } else if store.state.autoAssign {
+        switch switcher.handleActivation(app) {
+        case .follow(let space):
+            // ⌘-Tab / Dock click / link / launch opened an app that lives elsewhere: follow it.
+            NSLog("Keyspace: follow %@ -> space %@ (was %@)", id, space, current)
+            store.state.lastFocused[space] = id
+            switcher.switchTo(space)
+            refreshTitle()
+        case .adopt:
+            guard store.state.autoAssign else { return }
             store.assign(id, to: current)
             store.state.lastFocused[current] = id
+        case .remember:
+            store.state.lastFocused[current] = id   // saved on next switch
+        case .ignore:
+            break
         }
     }
 
@@ -172,6 +195,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(header)
         menu.addItem(.separator())
 
+        if store.state.keys.isEmpty {
+            let hint = NSMenuItem(title: "No keys yet — press \(store.state.modifier.symbol)⇧1 on any app",
+                                  action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            menu.addItem(hint)
+        }
         for space in store.state.keys {
             let names = store.apps(in: space).map(displayName)
             let item = NSMenuItem(title: "\(store.state.modifier.symbol)\(space)   " + (names.isEmpty ? "—" : names.joined(separator: ", ")),

@@ -40,7 +40,7 @@ private struct SpacesTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Drag apps between keys. Changes are saved instantly.")
+                Text("Only keys with apps are shown. Drag apps between keys; changes save instantly.")
                     .font(.callout).foregroundStyle(.secondary)
                 Spacer()
                 Menu {
@@ -65,6 +65,11 @@ private struct SpacesTab: View {
             }
             ScrollView {
                 VStack(spacing: 8) {
+                    if store.state.keys.isEmpty {
+                        Text("No keys yet. Open an app and press \(store.state.modifier.symbol)⇧1, or use Add Key.")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 80)
+                    }
                     ForEach(store.state.keys, id: \.self) { space in
                         SpaceRow(space: space, store: store, actions: actions, unassigned: unassigned) {
                             removeKey(space)
@@ -137,10 +142,8 @@ private struct SpaceRow: View {
                     }
                 }
                 Button("Choose App…") { chooseApp() }
-                if store.state.keys.count > 1 {
-                    Divider()
-                    Button("Remove Key \(space)", role: .destructive, action: onRemoveKey)
-                }
+                Divider()
+                Button("Remove Key \(space)", role: .destructive, action: onRemoveKey)
             } label: {
                 Image(systemName: "plus")
             }

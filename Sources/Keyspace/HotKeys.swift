@@ -57,27 +57,25 @@ final class HotKeys {
         }, 1, &spec, nil, &handlerRef)
     }
 
-    /// Registers <mod>+key (switch) and <mod>⇧+key (move) for each active key.
-    /// Returns the keys whose shortcuts are taken by another app.
+    /// Registers <mod>+key (switch) for keys in use, and <mod>⇧+key (move) for those plus
+    /// 1–9, so any app can start a new key. Returns the keys whose shortcuts another app owns.
     @discardableResult
-    func registerSpaceKeys(_ keys: [SpaceKey], _ modifier: HotkeyModifier) -> [SpaceKey] {
+    func registerSpaceKeys(switchKeys: [SpaceKey], moveKeys: [SpaceKey], _ modifier: HotkeyModifier) -> [SpaceKey] {
         unregisterSpaceKeys()
         let base = Self.carbonFlags(modifier)
-        var failed: [SpaceKey] = []
+        var failed = Set<SpaceKey>()
         var nextID: UInt32 = 10
-        for key in keys {
-            guard let code = Self.keyCodes[key] else { continue }
-            var ok = true
-            for (flags, action) in [(base, HotKeyAction.switchTo(key)), (base | UInt32(shiftKey), .move(key))] {
-                if let r = register(id: nextID, keyCode: code, modifiers: flags) {
-                    spaceRefs.append(r)
-                    Self.actions[nextID] = action
-                } else { ok = false }
-                nextID += 1
-            }
-            if !ok { failed.append(key) }
+        func add(_ key: SpaceKey, _ flags: UInt32, _ action: HotKeyAction) {
+            guard let code = Self.keyCodes[key] else { return }
+            if let r = register(id: nextID, keyCode: code, modifiers: flags) {
+                spaceRefs.append(r)
+                Self.actions[nextID] = action
+            } else { failed.insert(key) }
+            nextID += 1
         }
-        return failed
+        for key in switchKeys { add(key, base, .switchTo(key)) }
+        for key in moveKeys { add(key, base | UInt32(shiftKey), .move(key)) }
+        return SpaceStore.sorted(Array(failed))
     }
 
     func unregisterSpaceKeys() {

@@ -25,6 +25,7 @@ cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 codesign --force --deep --sign - "$APP"
 
 pkill -x Keyspace 2>/dev/null || true   # quitting restores all hidden apps
+for _ in $(seq 1 50); do pgrep -x Keyspace >/dev/null || break; sleep 0.1; done   # wait for clean exit
 rm -rf "/Applications/Keyspace.app"
 cp -R "$APP" "/Applications/"
 open "/Applications/Keyspace.app"

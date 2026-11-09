@@ -7,7 +7,7 @@ typealias SpaceKey = String
 /// Everything Keyspace remembers. Apps are stored by bundle ID (e.g. "com.google.Chrome"),
 /// never by window ID, so the setup survives quitting Keyspace, quitting apps, and reboots.
 struct KeyspaceState: Codable {
-    var keys: [SpaceKey] = SpaceStore.defaultKeys      // which keys are active, in display order
+    var keys: [SpaceKey] = []                          // keys in use (have apps, or were just added)
     var assignments: [String: SpaceKey] = [:]          // bundle ID -> space key
     var lastFocused: [SpaceKey: String] = [:]          // space key -> bundle ID focused there last
     var current: SpaceKey = "1"
@@ -33,7 +33,7 @@ struct KeyspaceState: Codable {
         } else if let old = try? c.decode(Int.self, forKey: .current) {
             current = String(old)
         }
-        keys = (try? c.decode([SpaceKey].self, forKey: .keys)) ?? SpaceStore.defaultKeys
+        keys = (try? c.decode([SpaceKey].self, forKey: .keys)) ?? []
         autoAssign = (try? c.decode(Bool.self, forKey: .autoAssign)) ?? true
         launchMissingApps = (try? c.decode(Bool.self, forKey: .launchMissingApps)) ?? false
         modifier = (try? c.decode(HotkeyModifier.self, forKey: .modifier)) ?? .option
@@ -55,7 +55,10 @@ enum HotkeyModifier: String, Codable, CaseIterable, Identifiable {
 
 /// ObservableObject so the Settings window updates live when hotkeys/auto-assign change things.
 final class SpaceStore: ObservableObject {
-    static let defaultKeys: [SpaceKey] = (1...9).map(String.init)
+    /// ⌥⇧1…9 always work so any app can start a new key; letters are added in Settings.
+    static let alwaysMoveKeys: [SpaceKey] = (1...9).map(String.init)
+    /// Called when the set of keys in use changes (AppDelegate re-registers hotkeys).
+    var onKeysChanged: (() -> Void)?
     /// Every key a space can use. "0" is reserved for pause.
     static let allKeys: [SpaceKey] = (1...9).map(String.init) + "ABCDEFGHIJKLMNOPQRSTUVWXYZ".map(String.init)
 
@@ -77,15 +80,18 @@ final class SpaceStore: ObservableObject {
     /// Keep the file self-consistent after hand edits or migration.
     private func sanitize() {
         state.keys = state.keys.map { $0.uppercased() }.filter(Self.allKeys.contains)
+        state.lastFocused = state.lastFocused.filter { state.assignments[$0.value] != nil }
         state.assignments = state.assignments.mapValues { $0.uppercased() }
         state.lastFocused = Dictionary(state.lastFocused.map { ($0.key.uppercased(), $0.value) },
                                        uniquingKeysWith: { a, _ in a })
         // Any key an app is assigned to must be active, so nothing becomes unreachable.
         state.keys += state.assignments.values.filter(Self.allKeys.contains)
-        state.keys = Self.sorted(state.keys)
-        if state.keys.isEmpty { state.keys = Self.defaultKeys }
+        // Only keys that hold apps are kept; empty ones disappear.
+        let used = Set(state.assignments.values)
+        state.keys = Self.sorted(state.keys.filter(used.contains))
+        state.lastFocused = state.lastFocused.filter { state.keys.contains($0.key) && state.assignments[$0.value] == $0.key }
         state.current = state.current.uppercased()
-        if !state.keys.contains(state.current) { state.current = state.keys[0] }
+        if !state.keys.contains(state.current) { state.current = state.keys.first ?? "1" }
     }
 
     /// Unique, numbers first, then letters A–Z.
@@ -112,34 +118,52 @@ final class SpaceStore: ObservableObject {
     }
 
     func assign(_ bundleID: String, to space: SpaceKey) {
+        let old = state.assignments[bundleID]
         state.assignments[bundleID] = space
+        var changed = false
+        if !state.keys.contains(space) { state.keys = Self.sorted(state.keys + [space]); changed = true }
+        if let old, old != space, pruneIfEmpty(old) { changed = true }
         save()
+        if changed { onKeysChanged?() }
+    }
+
+    /// Drops a key that no longer holds any app. Returns true if it was removed.
+    @discardableResult
+    private func pruneIfEmpty(_ key: SpaceKey) -> Bool {
+        guard apps(in: key).isEmpty, state.keys.contains(key) else { return false }
+        state.keys.removeAll { $0 == key }
+        state.lastFocused[key] = nil
+        return true
     }
 
     func forget(_ bundleID: String) {
+        let old = state.assignments[bundleID]
         state.assignments[bundleID] = nil
         state.lastFocused = state.lastFocused.filter { $0.value != bundleID }
+        let changed = old.map { pruneIfEmpty($0) } ?? false
         save()
+        if changed { onKeysChanged?() }
     }
 
     // MARK: Keys
 
     func addKey(_ key: SpaceKey) {
         guard Self.allKeys.contains(key), !state.keys.contains(key) else { return }
-        state.keys = Self.sorted(state.keys + [key])
+        state.keys = Self.sorted(state.keys + [key])   // stays (empty) so apps can be dropped in
         save()
+        onKeysChanged?()
     }
 
     /// Removing a key un-assigns its apps (they become "always visible"); returns those apps.
     @discardableResult
     func removeKey(_ key: SpaceKey) -> [String] {
-        guard state.keys.count > 1 else { return [] }
         let freed = apps(in: key)
         freed.forEach { state.assignments[$0] = nil }
         state.lastFocused[key] = nil
         state.keys.removeAll { $0 == key }
-        if state.current == key { state.current = state.keys[0] }
+        if state.current == key { state.current = state.keys.first ?? "1" }
         save()
+        onKeysChanged?()
         return freed
     }
 }

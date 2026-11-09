@@ -22,6 +22,7 @@ curl -fL --progress-bar "$URL" -o "$TMP/Keyspace.zip"
 echo "→ Installing to /Applications…"
 ditto -x -k "$TMP/Keyspace.zip" "$TMP"
 pkill -x Keyspace 2>/dev/null || true      # quitting Keyspace un-hides every app
+for _ in $(seq 1 50); do pgrep -x Keyspace >/dev/null || break; sleep 0.1; done   # wait for clean exit
 rm -rf "$APP"
 cp -R "$TMP/Keyspace.app" "$APP"
 # The app isn't notarized; clear the download quarantine so it opens without the Gatekeeper prompt.
